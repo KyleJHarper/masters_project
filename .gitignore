@@ -1,0 +1,8 @@
+*.project
+*.cproject
+bin/
+data*
+/Debug/
+*.out
+.settings/
+callgrind*
