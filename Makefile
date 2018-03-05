@@ -31,6 +31,9 @@ quick:
 		$(SRCDIR)/masters_project.c  \
 		-lrt -lm
 
+fast:
+	$(MAKE) quick
+
 clean:
 	rm -f $(BINDIR)/*
 	rm -f $(OBJECTS)
