@@ -194,7 +194,7 @@ void unslurp_file(src_file *src) {
 /*
  *  Print a table entry, header, or etc.
  */
-const int fields[16] = {16, 10, 10, 6, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8};
+const int fields[16] = {16, 10, 10, 6, 6, 8, 8, 8, 6, 6, 6, 6, 6, 6, 6, 6};
 char *hyphens = "----------------------------------------------------------------------------------------------------";
 char *blank = "                                                                                                  ";
 int to_kib(uint64_t value) {
@@ -220,7 +220,7 @@ void print_header() {
   print_separator("+", hyphens);
   printf("| %-*.*s | %*.*s | %*.*s | %*.*s | %-*.*s | %-*.*s | %-*.*s |\n",
     fields[0], fields[0], "Data File",
-    fields[1], fields[1], "KiB (2^10)",
+    fields[1], fields[1], "Size (KiB)",
     fields[2], fields[2], "Block Size",
     fields[3], fields[3], "Blocks",
     fields[4] + fields[5] + fields[6] + fields[7], fields[4] + fields[5] + fields[6] + fields[7], "Compression Size (KiB)",
@@ -229,7 +229,7 @@ void print_header() {
   );
   printf("| %*.*s | %*.*s | %*.*s | %*.*s | %*.*s%*.*s%*.*s%*.*s | %*.*s%*.*s%*.*s%*.*s | %*.*s%*.*s%*.*s%*.*s |\n",
     fields[0], fields[0], blank,
-    fields[1], fields[1], blank,
+    fields[1], fields[1], "(2^10)",
     fields[2], fields[2], blank,
     fields[3], fields[3], blank,
     fields[4], fields[4], "Memcpy",
