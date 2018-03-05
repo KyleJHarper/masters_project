@@ -19,18 +19,48 @@
 #include <dirent.h>
 #include <stdarg.h>
 #include <stdint.h>
+#include "lz4/lz4.h"
+#include "zlib/zlib.h"
+#include "zstd/zstd.h"
+#include <time.h>
 
 // Defines
-#define E_GENERIC  1
-#define E_IO       2
-#define MAX_FILES 32
+#define E_GENERIC            1
+#define E_IO                 2
+#define MAX_FILES           32
+#define MAX_BUFFERS     500000L   // This is 500,000 * 2048 bytes == 1GB maximum supported file.
+#define BILLION     1000000000L
 
 // Structs
 typedef struct src_file src_file;
 struct src_file {
-  char *filespec;  // The path to the file, fully qualified.
-  void *data;      // The data.
+  char     *filespec;  // The path to the file, fully qualified.
+  void     *data;      // The data.
   uint64_t size;   // The length of the data.
+};
+typedef struct result result;
+struct result {
+  src_file *src;  // Just link to the original since it should live the whole program life.
+  int      block_size;
+  int      blocks;
+  uint64_t memcpy_time;
+  uint64_t lz4_comp_size;
+  uint64_t lz4_comp_time;
+  uint64_t lz4_decomp_time;
+  uint64_t zlib_comp_size;
+  uint64_t zlib_comp_time;
+  uint64_t zlib_decomp_time;
+  uint64_t zstd_comp_size;
+  uint64_t zstd_comp_time;
+  uint64_t zstd_decomp_time;
+};
+typedef struct buffer buffer;
+struct buffer {
+  void     *raw;
+  void     *compressed;
+  void     *decompressed;
+  uint64_t raw_size;
+  int64_t  comp_size;
 };
 
 
@@ -148,6 +178,85 @@ void unslurp_file(src_file *src) {
   if(src->data) {
     free(src->data);
     src->data = NULL;
+  }
+}
+
+
+
+/*
+ *  Print a table entry.
+ */
+void print_entry() {
+
+}
+
+
+
+/*
+ *  Compression test on a slurped file with a given block size.
+ */
+void compression_test(src_file *src, int block_size) {
+  // Locals
+  result res;
+  buffer bufs[MAX_BUFFERS];
+  int buffer_count = 0;
+  struct timespec start, end;
+
+  // To avoid repeatedly malloc/free()-ing we'll just over allocate now and reuse.
+  buffer_count = src->size / block_size;
+  if(src->size % block_size > 0)
+    buffer_count++;
+  for(int i=0; i<buffer_count; i++) {
+    bufs[i].comp_size = 0;
+    bufs[i].raw_size = block_size;
+    if(i + 1 == buffer_count && src->size % block_size > 0)
+      bufs[i].raw_size = src->size % block_size;
+    bufs[i].raw = malloc(bufs[i].raw_size);
+    bufs[i].compressed = malloc(bufs[i].raw_size + 512);  // Overkill but meh.
+    bufs[i].decompressed = malloc(bufs[i].raw_size);
+    if(bufs[i].raw == NULL || bufs[i].compressed == NULL || bufs[i].decompressed == NULL)
+      fatal(E_GENERIC, "%s", "Failed to allocate memory for buffers.");
+  }
+
+  // Copy some result values for the test.
+  res.src = src;
+  res.block_size = block_size;
+  res.blocks = buffer_count;
+
+  // Run the tests.  To reduce the effects of caching-warming we use one compressor at a time.
+  // -- Memcpy
+  clock_gettime(CLOCK_MONOTONIC, &start);
+  for(int i=0; i<buffer_count; i++)
+    memcpy(bufs[i].raw, src->data + (i * block_size), bufs[i].raw_size);
+  clock_gettime(CLOCK_MONOTONIC, &end);
+  res.memcpy_time = BILLION * (end.tv_sec - start.tv_sec) + end.tv_nsec - start.tv_nsec;
+
+  // -- LZ4
+  // Compress Time
+  clock_gettime(CLOCK_MONOTONIC, &start);
+  for(int i=0; i<buffer_count; i++)
+    bufs[i].comp_size = LZ4_compress(bufs[i].raw, bufs[i].compressed, bufs[i].raw_size);
+  clock_gettime(CLOCK_MONOTONIC, &end);
+  res.lz4_comp_time = BILLION * (end.tv_sec - start.tv_sec) + end.tv_nsec - start.tv_nsec;
+  // Compress Size
+  res.lz4_comp_size = 0;
+  for(int i=0; i<buffer_count; i++)
+    res.lz4_comp_size += bufs[i].comp_size;
+  // Decompress Time
+  clock_gettime(CLOCK_MONOTONIC, &start);
+  for(int i=0; i<buffer_count; i++)
+    LZ4_decompress_safe(bufs[i].compressed, bufs[i].decompressed, bufs[i].comp_size, bufs[i].raw_size);
+  clock_gettime(CLOCK_MONOTONIC, &end);
+  res.lz4_decomp_time = BILLION * (end.tv_sec - start.tv_sec) + end.tv_nsec - start.tv_nsec;
+
+  // Print results.
+  //TODO
+
+  // Clean up and leave.
+  for(int i=0; i<buffer_count; i++) {
+    free(bufs[i].compressed);
+    free(bufs[i].decompressed);
+    free(bufs[i].raw);
   }
 }
 
