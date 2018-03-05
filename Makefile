@@ -24,7 +24,7 @@ build:
 		-lrt -lm
 
 quick:
-	$(CC) $(CFLAGS) -O0 -o $(BINDIR)/masters_project \
+	$(CC) $(CFLAGS) -O0 -pg -o $(BINDIR)/masters_project \
 		$(LZ4_SRCS)                  \
 		$(ZLIB_SRCS)                 \
 		$(ZSTD_SRCS)                 \
