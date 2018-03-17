@@ -26,6 +26,7 @@
 #include "zstd/zstd.h"
 #include <time.h>
 #include <libgen.h>
+#include <locale.h>
 
 
 // Structs
@@ -475,6 +476,7 @@ int main(int argc, char **argv) {
   src_file files[MAX_FILES];
   char *path;
   int file_count = 0;
+  struct timespec start, end;
 
   // 1.  Validate arguments.  Then load files into array (do NOT slurp here).
   validate(argc, argv);
@@ -483,6 +485,8 @@ int main(int argc, char **argv) {
   CPU_COUNT = sysconf(_SC_NPROCESSORS_ONLN);
 
   // 2.  Main loop to do our testing.
+  setlocale(LC_NUMERIC, "");
+  clock_gettime(CLOCK_MONOTONIC, &start);
   print_header();
   for(int i=0; i<file_count; i++) {
     slurp_file(&files[i]);
@@ -493,6 +497,9 @@ int main(int argc, char **argv) {
     unslurp_file(&files[i]);
   }
   print_separator("+", hyphens);
+  clock_gettime(CLOCK_MONOTONIC, &end);
+  int total_ms = (BILLION * (end.tv_sec - start.tv_sec) + end.tv_nsec - start.tv_nsec) / MILLION;
+  printf("Total test time: %'i ms (%i sec)\n", total_ms, (int)(total_ms / THOUSAND));
 
   // All done.
   return 0;
