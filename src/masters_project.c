@@ -13,29 +13,20 @@
  */
 
 // Includes
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <dirent.h>
 #include <stdarg.h>
 #include <stdint.h>
+#include <unistd.h>
 #include "lz4/lz4.h"
 #include "zlib/zlib.h"
 #include "zstd/zstd.h"
 #include <time.h>
 #include <libgen.h>
 
-// Defines & Globals
-#define E_GENERIC            1
-#define E_IO                 2
-#define MAX_FILES           32
-#define MAX_BUFFERS     500000   // This is 500,000 * 2048 bytes == 1GB maximum supported file.
-#define MILLION        1000000L
-#define BILLION     1000000000L
-#define BLOCK_COUNT          5
-#define ZSTD_LEVEL           3   // ZSTD Default
-#define ZLIB_LEVEL           6   // Gzip Default
-const int block_sizes[BLOCK_COUNT] = {2048, 4096, 8192, 16384, 32768};
 
 // Structs
 typedef struct src_file src_file;
@@ -59,6 +50,7 @@ struct result {
   uint64_t zstd_comp_size;
   uint64_t zstd_comp_time;
   uint64_t zstd_decomp_time;
+  pthread_mutex_t lock;
 };
 typedef struct buffer buffer;
 struct buffer {
@@ -68,6 +60,35 @@ struct buffer {
   uint64_t raw_size;
   int64_t  comp_size;
 };
+typedef struct test_wrapper test_wrapper;
+struct test_wrapper {
+  result *res;
+  int buffer_count;
+  src_file *src;
+  int block_size;
+  int s_idx;
+  int e_idx;
+};
+
+
+// Defines & Globals
+#define E_GENERIC            1
+#define E_IO                 2
+#define MAX_FILES           32
+#define MAX_BUFFERS     500000   // This is 500,000 * 2048 bytes == 1GB maximum supported file.
+#define THOUSAND          1000L
+#define MILLION        1000000L
+#define BILLION     1000000000L
+#define BLOCK_COUNT          5
+#define ZSTD_LEVEL           3   // ZSTD Default
+#define ZLIB_LEVEL           6   // Gzip Default
+const int block_sizes[BLOCK_COUNT] = {2048, 4096, 8192, 16384, 32768};
+buffer bufs[MAX_BUFFERS];        // Yep.  Get over it.
+int CPU_COUNT = 1;
+// !!! Test Settings !!!
+#define OPT_MT               0   // Zero == Single Threaded  |  Non-Zero == Multi Threaded
+
+
 
 
 
@@ -122,7 +143,7 @@ void scan_files(char *path, src_file files[], int *file_count) {
 
   // For simplicity we'll put a trailing slash on path.
   if(strcmp(path + strlen(path) - 1, "/") != 0) {
-    char *new_path = malloc(strlen(path) + 1);
+    char *new_path = malloc(strlen(path) + 2);
     strcpy(new_path, path);
     strcat(new_path, "/");
     path = new_path;
@@ -134,6 +155,8 @@ void scan_files(char *path, src_file files[], int *file_count) {
   entry = readdir(dir);
   while(entry != NULL) {
     if(entry->d_type == DT_REG) {
+      if(*file_count + 1 >= MAX_FILES)
+	fatal(E_GENERIC, "You can only read up to %d files.", MAX_FILES);
       files[(*file_count)].filespec = malloc(strlen(path) + strlen(entry->d_name) + 1);
       strcpy(files[(*file_count)].filespec, path);
       strcat(files[(*file_count)].filespec, entry->d_name);
@@ -194,7 +217,7 @@ void unslurp_file(src_file *src) {
 /*
  *  Print a table entry, header, or etc.
  */
-const int fields[16] = {16, 10, 10, 6, 6, 8, 8, 8, 6, 6, 6, 6, 6, 6, 6, 6};
+const int fields[16] = {16, 10, 10, 6, 6, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8};
 char *hyphens = "----------------------------------------------------------------------------------------------------";
 char *blank = "                                                                                                  ";
 int to_kib(uint64_t value) {
@@ -202,6 +225,9 @@ int to_kib(uint64_t value) {
 }
 int ns_to_ms(uint64_t value) {
   return (int)(value / MILLION);
+}
+int ns_to_us(uint64_t value) {
+  return (int)(value / THOUSAND);
 }
 void print_separator(char *column, char *fill) {
   // Note: we +2 to complement padding of strings/values.
@@ -217,6 +243,10 @@ void print_separator(char *column, char *fill) {
   );
 }
 void print_header() {
+  printf("Threading Mode: %s", OPT_MT ? "Multi-Threaded" : "Single-Threaded");
+  if(OPT_MT)
+    printf("  (%i threads)", CPU_COUNT);
+  printf("\n");
   print_separator("+", hyphens);
   printf("| %-*.*s | %*.*s | %*.*s | %*.*s | %-*.*s | %-*.*s | %-*.*s |\n",
     fields[0], fields[0], "Data File",
@@ -224,8 +254,8 @@ void print_header() {
     fields[2], fields[2], "Block Size",
     fields[3], fields[3], "Blocks",
     fields[4] + fields[5] + fields[6] + fields[7], fields[4] + fields[5] + fields[6] + fields[7], "Compression Size (KiB)",
-    fields[8] + fields[9] + fields[10] + fields[11], fields[8] + fields[9] + fields[10] + fields[11], "Compression Time (ms)",
-    fields[12] + fields[13] + fields[14] + fields[15], fields[12] + fields[13] + fields[14] + fields[15], "Decompression Time (ms)"
+    fields[8] + fields[9] + fields[10] + fields[11], fields[8] + fields[9] + fields[10] + fields[11], "Compression Time (uS)",
+    fields[12] + fields[13] + fields[14] + fields[15], fields[12] + fields[13] + fields[14] + fields[15], "Decompression Time (uS)"
   );
   printf("| %*.*s | %*.*s | %*.*s | %*.*s | %*.*s%*.*s%*.*s%*.*s | %*.*s%*.*s%*.*s%*.*s | %*.*s%*.*s%*.*s%*.*s |\n",
     fields[0], fields[0], blank,
@@ -257,14 +287,14 @@ void print_result(result *res) {
     fields[5], to_kib(res->lz4_comp_size),
     fields[6], to_kib(res->zlib_comp_size),
     fields[7], to_kib(res->zstd_comp_size),
-    fields[8], ns_to_ms(res->memcpy_time),
-    fields[9], ns_to_ms(res->lz4_comp_time),
-    fields[10], ns_to_ms(res->zlib_comp_time),
-    fields[11], ns_to_ms(res->zstd_comp_time),
-    fields[12], ns_to_ms(res->memcpy_time),
-    fields[13], ns_to_ms(res->lz4_decomp_time),
-    fields[14], ns_to_ms(res->zlib_decomp_time),
-    fields[15], ns_to_ms(res->zstd_decomp_time)
+    fields[8], ns_to_us(res->memcpy_time),
+    fields[9], ns_to_us(res->lz4_comp_time),
+    fields[10], ns_to_us(res->zlib_comp_time),
+    fields[11], ns_to_us(res->zstd_comp_time),
+    fields[12], ns_to_us(res->memcpy_time),
+    fields[13], ns_to_us(res->lz4_decomp_time),
+    fields[14], ns_to_us(res->zlib_decomp_time),
+    fields[15], ns_to_us(res->zstd_decomp_time)
   );
 }
 
@@ -273,13 +303,114 @@ void print_result(result *res) {
 /*
  *  Compression test on a slurped file with a given block size.
  */
+void increment_result_value(result *res, uint64_t *item, uint64_t value) {
+  pthread_mutex_lock(&res->lock);
+  *item += value;
+  pthread_mutex_unlock(&res->lock);
+}
+void run_test(result *res, src_file *src, int block_size, int s_idx, int e_idx) {
+  struct timespec start, end;
+  int zlib_errors = 0;
+  uint64_t tmp_size = 0;
+
+  // -- Memcpy
+  clock_gettime(CLOCK_MONOTONIC, &start);
+  for(int i=s_idx; i<=e_idx; i++)
+    memcpy(bufs[i].raw, src->data + (i * block_size), bufs[i].raw_size);
+  clock_gettime(CLOCK_MONOTONIC, &end);
+  increment_result_value(res, &res->memcpy_time, BILLION * (end.tv_sec - start.tv_sec) + end.tv_nsec - start.tv_nsec);
+
+  // Run the tests.  To reduce the effects of caching-warming we use one compressor at a time.
+  // -- LZ4
+  // Compress Time
+  clock_gettime(CLOCK_MONOTONIC, &start);
+  for(int i=s_idx; i<=e_idx; i++)
+    bufs[i].comp_size = LZ4_compress_default(bufs[i].raw, bufs[i].compressed, bufs[i].raw_size, bufs[i].raw_size);
+  clock_gettime(CLOCK_MONOTONIC, &end);
+  increment_result_value(res, &res->lz4_comp_time, BILLION * (end.tv_sec - start.tv_sec) + end.tv_nsec - start.tv_nsec);
+  // Decompress Time
+  clock_gettime(CLOCK_MONOTONIC, &start);
+  for(int i=s_idx; i<=e_idx; i++)
+    LZ4_decompress_safe(bufs[i].compressed, bufs[i].decompressed, bufs[i].comp_size, bufs[i].raw_size);
+  clock_gettime(CLOCK_MONOTONIC, &end);
+  increment_result_value(res, &res->lz4_decomp_time, BILLION * (end.tv_sec - start.tv_sec) + end.tv_nsec - start.tv_nsec);
+  // Validation and Size Storage
+  tmp_size = 0;
+  for(int i=s_idx; i<=e_idx; i++) {
+    if(bufs[i].comp_size < 0)
+      fatal(E_GENERIC, "%s (id: %d)", "There was a problem with buffer", i);
+    tmp_size += bufs[i].comp_size;
+  }
+  increment_result_value(res, &res->lz4_comp_size, tmp_size);
+
+  // -- ZLIB
+  // Compress Time
+  clock_gettime(CLOCK_MONOTONIC, &start);
+  uLongf max_compressed_size = 0;
+  uLongf data_length = 0;
+  for(int i=s_idx; i<=e_idx; i++) {
+    max_compressed_size = compressBound(bufs[i].raw_size);
+    zlib_errors += compress2(bufs[i].compressed, &max_compressed_size, bufs[i].raw, bufs[i].raw_size, ZLIB_LEVEL);
+    bufs[i].comp_size = max_compressed_size;
+  }
+  clock_gettime(CLOCK_MONOTONIC, &end);
+  increment_result_value(res, &res->zlib_comp_time, BILLION * (end.tv_sec - start.tv_sec) + end.tv_nsec - start.tv_nsec);
+  // Decompress Time
+  clock_gettime(CLOCK_MONOTONIC, &start);
+  for(int i=s_idx; i<=e_idx; i++) {
+    data_length = bufs[i].raw_size;
+    zlib_errors += uncompress(bufs[i].decompressed, &data_length, bufs[i].compressed, bufs[i].comp_size);
+  }
+  clock_gettime(CLOCK_MONOTONIC, &end);
+  increment_result_value(res, &res->zlib_decomp_time, BILLION * (end.tv_sec - start.tv_sec) + end.tv_nsec - start.tv_nsec);
+  // Validation and Size Storage
+  tmp_size = 0;
+  if(zlib_errors > 0)
+    fatal(E_GENERIC, "%s (errors: %i)", "Ran into a compression problem with zlib.", zlib_errors);
+  for(int i=s_idx; i<=e_idx; i++)
+    tmp_size += bufs[i].comp_size;
+  increment_result_value(res, &res->zlib_comp_size, tmp_size);
+
+  // -- ZSTD
+  // Compress Time
+  clock_gettime(CLOCK_MONOTONIC, &start);
+  for(int i=s_idx; i<=e_idx; i++)
+    bufs[i].comp_size = ZSTD_compress(bufs[i].compressed, bufs[i].raw_size + 512, bufs[i].raw, bufs[i].raw_size, ZSTD_LEVEL);
+  clock_gettime(CLOCK_MONOTONIC, &end);
+  increment_result_value(res, &res->zstd_comp_time, BILLION * (end.tv_sec - start.tv_sec) + end.tv_nsec - start.tv_nsec);
+  // Decompress Time
+  clock_gettime(CLOCK_MONOTONIC, &start);
+  for(int i=s_idx; i<=e_idx; i++)
+    ZSTD_decompress(bufs[i].decompressed, bufs[i].raw_size, bufs[i].compressed, bufs[i].comp_size);
+  clock_gettime(CLOCK_MONOTONIC, &end);
+  increment_result_value(res, &res->zstd_decomp_time, BILLION * (end.tv_sec - start.tv_sec) + end.tv_nsec - start.tv_nsec);
+  // Validation and Size Storage
+  tmp_size = 0;
+  for(int i=s_idx; i<=e_idx; i++) {
+    if(bufs[i].comp_size < 0)
+      fatal(E_GENERIC, "%s (id: %d)", "There was a problem with buffer", i);
+    tmp_size += bufs[i].comp_size;
+  }
+  increment_result_value(res, &res->zstd_comp_size, tmp_size);
+}
+void run_test_wrapper(test_wrapper *wrapper) {
+  run_test(wrapper->res, wrapper->src, wrapper->block_size, wrapper->s_idx, wrapper->e_idx);
+}
 void compression_test(src_file *src, int block_size) {
   // Locals
   result res;
-  static buffer bufs[MAX_BUFFERS];  // Static to avoid stack overflow.  I'm too lazy to malloc.
+  res.lz4_comp_size = 0;
+  res.lz4_comp_time = 0;
+  res.lz4_decomp_time = 0;
+  res.zlib_comp_size = 0;
+  res.zlib_comp_time = 0;
+  res.zlib_decomp_time = 0;
+  res.zstd_comp_size = 0;
+  res.zstd_comp_time = 0;
+  res.zstd_decomp_time = 0;
+  res.memcpy_time = 0;
+  pthread_mutex_init(&res.lock, NULL);
   int buffer_count = 0;
-  struct timespec start, end;
-  int zlib_errors = 0;
 
   // To avoid repeatedly malloc/free()-ing we'll just over allocate now and reuse.
   buffer_count = src->size / block_size;
@@ -301,87 +432,26 @@ void compression_test(src_file *src, int block_size) {
   res.block_size = block_size;
   res.blocks = buffer_count;
 
-  // Run the tests.  To reduce the effects of caching-warming we use one compressor at a time.
-  // -- Memcpy
-  clock_gettime(CLOCK_MONOTONIC, &start);
-  for(int i=0; i<buffer_count; i++)
-    memcpy(bufs[i].raw, src->data + (i * block_size), bufs[i].raw_size);
-  clock_gettime(CLOCK_MONOTONIC, &end);
-  res.memcpy_time = BILLION * (end.tv_sec - start.tv_sec) + end.tv_nsec - start.tv_nsec;
-
-  // -- LZ4
-  // Compress Time
-  clock_gettime(CLOCK_MONOTONIC, &start);
-  for(int i=0; i<buffer_count; i++)
-    bufs[i].comp_size = LZ4_compress_default(bufs[i].raw, bufs[i].compressed, bufs[i].raw_size, bufs[i].raw_size);
-  clock_gettime(CLOCK_MONOTONIC, &end);
-  res.lz4_comp_time = BILLION * (end.tv_sec - start.tv_sec) + end.tv_nsec - start.tv_nsec;
-  // Compress Size
-  res.lz4_comp_size = 0;
-  for(int i=0; i<buffer_count; i++)
-    res.lz4_comp_size += bufs[i].comp_size;
-  // Decompress Time
-  clock_gettime(CLOCK_MONOTONIC, &start);
-  for(int i=0; i<buffer_count; i++)
-    LZ4_decompress_safe(bufs[i].compressed, bufs[i].decompressed, bufs[i].comp_size, bufs[i].raw_size);
-  clock_gettime(CLOCK_MONOTONIC, &end);
-  res.lz4_decomp_time = BILLION * (end.tv_sec - start.tv_sec) + end.tv_nsec - start.tv_nsec;
-  // Validation (now that we're not timing anything).
-  for(int i=0; i<buffer_count; i++) {
-    if(bufs[i].comp_size < 0)
-      fatal(E_GENERIC, "%s (id: %d)", "There was a problem with buffer", i);
-  }
-
-  // -- ZLIB
-  // Compress Time
-  clock_gettime(CLOCK_MONOTONIC, &start);
-  uLongf max_compressed_size = 0;
-  uLongf data_length = 0;
-  for(int i=0; i<buffer_count; i++) {
-    max_compressed_size = compressBound(bufs[i].raw_size);
-    zlib_errors += compress2(bufs[i].compressed, &max_compressed_size, bufs[i].raw, bufs[i].raw_size, ZLIB_LEVEL);
-    bufs[i].comp_size = max_compressed_size;
-  }
-  clock_gettime(CLOCK_MONOTONIC, &end);
-  res.zlib_comp_time = BILLION * (end.tv_sec - start.tv_sec) + end.tv_nsec - start.tv_nsec;
-  // Compress Size
-  res.zlib_comp_size = 0;
-  for(int i=0; i<buffer_count; i++)
-    res.zlib_comp_size += bufs[i].comp_size;
-  // Decompress Time
-  clock_gettime(CLOCK_MONOTONIC, &start);
-  for(int i=0; i<buffer_count; i++) {
-    data_length = bufs[i].raw_size;
-    zlib_errors += uncompress(bufs[i].decompressed, &data_length, bufs[i].compressed, bufs[i].comp_size);
-  }
-  clock_gettime(CLOCK_MONOTONIC, &end);
-  res.zlib_decomp_time = BILLION * (end.tv_sec - start.tv_sec) + end.tv_nsec - start.tv_nsec;
-  // Validation (now that we're not timing anything).
-  if(zlib_errors > 0)
-    fatal(E_GENERIC, "%s (errors: %i)", "Ran into a compression problem with zlib.", zlib_errors);
-
-  // -- ZSTD
-  // Compress Time
-  //rv = ZSTD_decompress(decompressed_data, buf->data_length, buf->data, buf->comp_length);
-  clock_gettime(CLOCK_MONOTONIC, &start);
-  for(int i=0; i<buffer_count; i++)
-    bufs[i].comp_size = ZSTD_compress(bufs[i].compressed, bufs[i].raw_size + 512, bufs[i].raw, bufs[i].raw_size, ZSTD_LEVEL);
-  clock_gettime(CLOCK_MONOTONIC, &end);
-  res.zstd_comp_time = BILLION * (end.tv_sec - start.tv_sec) + end.tv_nsec - start.tv_nsec;
-  // Compress Size
-  res.zstd_comp_size = 0;
-  for(int i=0; i<buffer_count; i++)
-    res.zstd_comp_size += bufs[i].comp_size;
-  // Decompress Time
-  clock_gettime(CLOCK_MONOTONIC, &start);
-  for(int i=0; i<buffer_count; i++)
-    ZSTD_decompress(bufs[i].decompressed, bufs[i].raw_size, bufs[i].compressed, bufs[i].comp_size);
-  clock_gettime(CLOCK_MONOTONIC, &end);
-  res.zstd_decomp_time = BILLION * (end.tv_sec - start.tv_sec) + end.tv_nsec - start.tv_nsec;
-  // Validation (now that we're not timing anything).
-  for(int i=0; i<buffer_count; i++) {
-    if(bufs[i].comp_size < 0)
-      fatal(E_GENERIC, "%s (id: %d)", "There was a problem with buffer", i);
+  // If we're MT, act differently.  Time real-time.
+  if(OPT_MT) {
+    pthread_t workers[CPU_COUNT];
+    test_wrapper wrappers[CPU_COUNT];
+    for(int i=0; i<CPU_COUNT; i++) {
+      // Set up the wrapper with points and static values.
+      wrappers[i].block_size = block_size;
+      wrappers[i].buffer_count = buffer_count;
+      wrappers[i].res = &res;
+      wrappers[i].src = src;
+      // Calculate the indexes, then spin up a thread and change the start index for the next loop.
+      wrappers[i].s_idx = (((i+0) * buffer_count) / CPU_COUNT);
+      wrappers[i].e_idx = (((i+1) * buffer_count) / CPU_COUNT) - 1;
+      pthread_create(&workers[i], NULL, (void *) &run_test_wrapper, &wrappers[i]);
+    }
+    for(int i=0; i<CPU_COUNT; i++)
+      pthread_join(workers[i], NULL);
+  } else {
+    // Just run the test directly.
+    run_test(&res, src, block_size, 0, buffer_count - 1);
   }
 
   // Print results.
@@ -410,6 +480,7 @@ int main(int argc, char **argv) {
   validate(argc, argv);
   path = argv[1];
   scan_files(path, files, &file_count);
+  CPU_COUNT = sysconf(_SC_NPROCESSORS_ONLN);
 
   // 2.  Main loop to do our testing.
   print_header();
