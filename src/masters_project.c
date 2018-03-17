@@ -86,8 +86,7 @@ struct test_wrapper {
 const int block_sizes[BLOCK_COUNT] = {2048, 4096, 8192, 16384, 32768};
 buffer bufs[MAX_BUFFERS];        // Yep.  Get over it.
 int CPU_COUNT = 1;
-// !!! Test Settings !!!
-#define OPT_MT               0   // Zero == Single Threaded  |  Non-Zero == Multi Threaded
+int THREADS   = 1;               // Passed as arg 3.  1 == Single Thread.  2+ == Multi-Thread.
 
 
 
@@ -119,9 +118,9 @@ void fatal(int exit_code, char *format, ...) {
  */
 void validate(int argc, char **argv) {
   if(argc == 1)
-    fatal(E_GENERIC, "%s%s%s", "Usage: ", argv[0], " /path/to/data/folder");
-  if(argc != 2)
-    fatal(E_GENERIC, "%s", "You must send exactly 1 argument to this program: the full path to the files to work with.");
+    fatal(E_GENERIC, "%s%s%s", "Usage: ", argv[0], " /path/to/data/folder <thread_count>");
+  if(argc != 3)
+    fatal(E_GENERIC, "%s", "You must send exactly 2 arguments to this program: the full path to the files to work with and thread count.");
   if(strlen(argv[1]) == 0 || strncmp(argv[1], "/", 1) != 0)
     fatal(E_GENERIC, "%s", "You must send a valid path to scan for files (non-recursive).  It should start with: /something");
   // Directory Checking
@@ -129,6 +128,10 @@ void validate(int argc, char **argv) {
   if(!dir)
     fatal(E_IO, "%s%s", "Can't open directory: bad path, isn't a directory, missing permission, etc.: ", argv[1]);
   closedir(dir);
+  if(atoi(argv[2]) < 1)
+    fatal(E_GENERIC, "%s%i", "The second argument must be a positive number for thread count not: ", atoi(argv[2]));
+  if(atoi(argv[2]) > CPU_COUNT)
+    fatal(E_GENERIC, "%s", "You can't specify more threads than there are CPUs/Cores to handle them.");
   return;
 }
 
@@ -244,9 +247,9 @@ void print_separator(char *column, char *fill) {
   );
 }
 void print_header() {
-  printf("Threading Mode: %s", OPT_MT ? "Multi-Threaded" : "Single-Threaded");
-  if(OPT_MT)
-    printf("  (%i threads)", CPU_COUNT);
+  printf("Threading Mode: %s", THREADS > 1 ? "Multi-Threaded" : "Single-Threaded");
+  if(THREADS > 1)
+    printf("  (%i threads)", THREADS);
   printf("\n");
   print_separator("+", hyphens);
   printf("| %-*.*s | %*.*s | %*.*s | %*.*s | %-*.*s | %-*.*s | %-*.*s |\n",
@@ -434,21 +437,21 @@ void compression_test(src_file *src, int block_size) {
   res.blocks = buffer_count;
 
   // If we're MT, act differently.  Time real-time.
-  if(OPT_MT) {
-    pthread_t workers[CPU_COUNT];
-    test_wrapper wrappers[CPU_COUNT];
-    for(int i=0; i<CPU_COUNT; i++) {
+  if(THREADS > 1) {
+    pthread_t workers[THREADS];
+    test_wrapper wrappers[THREADS];
+    for(int i=0; i<THREADS; i++) {
       // Set up the wrapper with points and static values.
       wrappers[i].block_size = block_size;
       wrappers[i].buffer_count = buffer_count;
       wrappers[i].res = &res;
       wrappers[i].src = src;
       // Calculate the indexes, then spin up a thread and change the start index for the next loop.
-      wrappers[i].s_idx = (((i+0) * buffer_count) / CPU_COUNT);
-      wrappers[i].e_idx = (((i+1) * buffer_count) / CPU_COUNT) - 1;
+      wrappers[i].s_idx = (((i+0) * buffer_count) / THREADS);
+      wrappers[i].e_idx = (((i+1) * buffer_count) / THREADS) - 1;
       pthread_create(&workers[i], NULL, (void *) &run_test_wrapper, &wrappers[i]);
     }
-    for(int i=0; i<CPU_COUNT; i++)
+    for(int i=0; i<THREADS; i++)
       pthread_join(workers[i], NULL);
   } else {
     // Just run the test directly.
@@ -477,12 +480,13 @@ int main(int argc, char **argv) {
   char *path;
   int file_count = 0;
   struct timespec start, end;
+  CPU_COUNT = sysconf(_SC_NPROCESSORS_ONLN);
 
   // 1.  Validate arguments.  Then load files into array (do NOT slurp here).
   validate(argc, argv);
   path = argv[1];
+  THREADS = atoi(argv[2]);
   scan_files(path, files, &file_count);
-  CPU_COUNT = sysconf(_SC_NPROCESSORS_ONLN);
 
   // 2.  Main loop to do our testing.
   setlocale(LC_NUMERIC, "");
