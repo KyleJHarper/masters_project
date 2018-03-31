@@ -83,7 +83,7 @@ struct test_wrapper {
 #define BLOCK_COUNT          5
 #define ZSTD_LEVEL           3   // ZSTD Default
 #define ZLIB_LEVEL           6   // Gzip Default
-const int block_sizes[BLOCK_COUNT] = {2048, 4096, 8192, 16384, 32768};
+const int block_sizes[BLOCK_COUNT] = {4096, 8192, 16384, 32768, 65536};
 buffer bufs[MAX_BUFFERS];        // Yep.  Get over it.
 int CPU_COUNT = 1;
 int THREADS   = 1;               // Passed as arg 3.  1 == Single Thread.  2+ == Multi-Thread.
