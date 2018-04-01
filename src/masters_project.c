@@ -83,6 +83,7 @@ struct test_wrapper {
 #define BLOCK_COUNT          5
 #define ZSTD_LEVEL           3   // ZSTD Default
 #define ZLIB_LEVEL           6   // Gzip Default
+#define WARMUP_SEC          15   // Seconds
 const int block_sizes[BLOCK_COUNT] = {4096, 8192, 16384, 32768, 65536};
 buffer bufs[MAX_BUFFERS];        // Yep.  Get over it.
 int CPU_COUNT = 1;
@@ -470,6 +471,35 @@ void compression_test(src_file *src, int block_size) {
 }
 
 
+/*
+ *  Warm up the CPU to avoid skews from thottling.
+ */
+void waste_cpu_time() {
+  // Using the LZ4 example (which I wrote years ago), repeatedly compress and decompress the
+  // same buffer to waste CPU time in a complex-enough manner to not be optimized-out by gcc.
+  time_t start = time(0);
+  const char* const src = "Lorem ipsum dolor sit amet, consectetur adipiscing elit.";
+  const int src_size = (int)(strlen(src) + 1);
+  const int max_dst_size = LZ4_compressBound(src_size);
+  char* compressed_data = malloc(max_dst_size);
+  char* const regen_buffer = malloc(src_size);
+  const int compressed_data_size = LZ4_compress_default(src, compressed_data, src_size, max_dst_size);
+  while(time(0) - start < WARMUP_SEC) {
+    // compresss it
+    LZ4_compress_default(src, compressed_data, src_size, max_dst_size);
+    // now decompress it... yep
+    LZ4_decompress_safe(compressed_data, regen_buffer, compressed_data_size, src_size);
+  }
+}
+void warm_up() {
+  pthread_t time_wasters[THREADS];
+  for(int i=0; i<THREADS; i++)
+    pthread_create(&time_wasters[i], NULL, (void *) &waste_cpu_time, NULL);
+  for(int i=0; i<THREADS; i++)
+    pthread_join(time_wasters[i], NULL);
+}
+
+
 
 /*
  *  Main function, initialization point for program.
@@ -489,6 +519,9 @@ int main(int argc, char **argv) {
   scan_files(path, files, &file_count);
 
   // 2.  Main loop to do our testing.
+  printf("Warming up the CPU for %d seconds.\n", WARMUP_SEC);
+  warm_up();
+  printf("Warmup complete.  Starting program.");
   setlocale(LC_NUMERIC, "");
   clock_gettime(CLOCK_MONOTONIC, &start);
   print_header();
