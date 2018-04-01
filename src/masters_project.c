@@ -83,7 +83,7 @@ struct test_wrapper {
 #define BLOCK_COUNT          5
 #define ZSTD_LEVEL           3   // ZSTD Default
 #define ZLIB_LEVEL           6   // Gzip Default
-#define WARMUP_SEC          15   // Seconds
+#define WARMUP_SEC          30   // Seconds
 const int block_sizes[BLOCK_COUNT] = {4096, 8192, 16384, 32768, 65536};
 buffer bufs[MAX_BUFFERS];        // Yep.  Get over it.
 int CPU_COUNT = 1;
