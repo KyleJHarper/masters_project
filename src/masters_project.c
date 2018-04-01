@@ -521,7 +521,7 @@ int main(int argc, char **argv) {
   // 2.  Main loop to do our testing.
   printf("Warming up the CPU for %d seconds.\n", WARMUP_SEC);
   warm_up();
-  printf("Warmup complete.  Starting program.");
+  printf("Warmup complete.  Starting program.\n");
   setlocale(LC_NUMERIC, "");
   clock_gettime(CLOCK_MONOTONIC, &start);
   print_header();
